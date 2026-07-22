@@ -1,61 +1,43 @@
 # CI-Saver
 
-## Automatically cut 30–50% from your GitHub Actions bill by skipping unnecessary runs
+**Cut GitHub Actions runner bills by 30–50% by dynamically skipping redundant test cycles when only non-code files change.**
 
-**CI-Saver** helps teams avoid wasting minutes on workflows that don’t need to run, so your CI stays fast, focused, and cost-efficient.
+CI-Saver is a premium GitHub Action built for teams that want to reduce CI waste without changing their workflow structure. It inspects pull request changes and helps you avoid burning runner minutes on updates that don’t affect your code.
 
-## Paid License Required
+> Premium tool: **$15/month subscription required**
 
-A valid **paid license key is strictly required** to use CI-Saver.
+## Prerequisites
 
-Without an active license, the action will stop with an access-denied message and will not proceed with workflow inspection.
+A valid Gumroad license key is strictly required to run this action.
 
-## How It Works
+If a license key is missing, invalid, or unpaid, the action will fail-securely and block unauthorized builds.
 
-CI-Saver checks your pull request changes and determines whether your workflow should run. It is ideal for teams that want to reduce spend while keeping automation in place.
+## Get Started
 
-## How to Buy
+Purchase your license key here:
 
-Get your license here:
+[Buy CI-Saver on Gumroad](https://joshua633.gumroad.com/l/wkgqwq?wanted=true)
 
-[Buy CI-Saver on Gumroad](https://gumroad.com/YOUR-PLACEHOLDER-URL)
-
-After purchase, you’ll receive a license key to use in your GitHub repository secrets.
-
-## Installation
-
-Add CI-Saver to your workflow like this:
+## Usage Example
 
 ```yaml
-name: CI
+name: PR Checks
 
 on:
   pull\_request:
-    branches:
-      - main
 
 jobs:
-  inspect:
+  ci-saver:
     runs-on: ubuntu-latest
-    outputs:
-      should\_run: \${{ steps.ci\_saver.outputs.should\_run }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: CI-Saver Code Inspector
-        id: ci\_saver
+      - name: Check whether heavy CI should run
+        id: ci-saver
         uses: your-org/ci-saver@v1
         with:
           license\_key: \${{ secrets.GUMROAD\_LICENSE\_KEY }}
 
-  build:
-    needs: inspect
-    if: needs.inspect.outputs.should\_run == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Build
-        run: npm ci && npm test
+      - name: Run heavy tests
+        if: steps.ci-saver.outputs.should\_run == 'true'
+        run: npm test
