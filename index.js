@@ -1,55 +1,48 @@
 // index.js
 'use strict';
 
-const https = require('https');
 const fs = require('fs');
+const https = require('https');
 
-const LICENSE_KEY =
-  process.env.INPUT_LICENSE_KEY ||
-  (process.env.GITHUB_WORKSPACE
-    ? safeReadFile(process.env.GITHUB_WORKSPACE + '/license_key.txt')
-    : '') ||
-  '';
-
-const GUMROAD_PRODUCT_ID = 'YOUR_GUMROAD_PRODUCT_ID';
-const GITHUB_EVENT_PATH = process.env.GITHUB_EVENT_PATH;
-const GITHUB_OUTPUT = process.env.GITHUB_OUTPUT;
-
-function safeReadFile(path) {
-  try {
-    return fs.readFileSync(path, 'utf8').trim();
-  } catch {
-    return '';
-  }
-}
-
-function failLicense() {
-  console.error('CI-Saver: Access Denied. Your Gumroad license key is invalid or expired.');
+function fail(message) {
+  process.stdout.write(message + '\n');
   process.exit(1);
 }
 
-function gumroadRequest(payload) {
+function postJson(urlString, bodyObj, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
-    const body = JSON.stringify(payload);
+    const url = new URL(urlString);
+    const body = JSON.stringify(bodyObj);
 
     const req = https.request(
       {
-        hostname: 'gumroad.com',
-        path: '/l/verify',
+        protocol: url.protocol,
+        hostname: url.hostname,
+        port: url.port || 443,
+        path: url.pathname + url.search,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(body),
-          'User-Agent': 'CI-Saver/1.0',
+          'User-Agent': 'ci-saver-action',
         },
+        timeout: timeoutMs,
       },
       (res) => {
         let data = '';
         res.setEncoding('utf8');
-        res.on('data', (chunk) => (data += chunk));
-        res.on('end', () => resolve({ statusCode: res.statusCode || 0, body: data }));
+        res.on('data', (chunk) => {
+          data += chunk;
+        });
+        res.on('end', () => {
+          resolve({ statusCode: res.statusCode || 0, body: data });
+        });
       }
     );
+
+    req.on('timeout', () => {
+      req.destroy(new Error('Request timed out'));
+    });
 
     req.on('error', reject);
     req.write(body);
@@ -57,74 +50,109 @@ function gumroadRequest(payload) {
   });
 }
 
-function writeOutput(name, value) {
-  if (!GITHUB_OUTPUT) return;
-  fs.appendFileSync(GITHUB_OUTPUT, `${name}=${value}\n`);
+function isValidSubscriptionResponse(response) {
+  if (!response || typeof response !== 'object') return false;
+
+  const success = response.success === true;
+  const active =
+    response.subscription_active === true ||
+    response.subscription_status === 'active' ||
+    response.recurring === true ||
+    response.paid === true ||
+    response.purchase && response.purchase.refunded === false;
+
+  return success && active;
 }
 
-function getChangedFilesFromEvent() {
-  if (!GITHUB_EVENT_PATH) return [];
+function extractChangedFiles(eventData) {
+  const files = [];
 
-  const raw = fs.readFileSync(GITHUB_EVENT_PATH, 'utf8');
-  const event = JSON.parse(raw);
+  if (Array.isArray(eventData?.files)) {
+    for (const f of eventData.files) {
+      if (typeof f === 'string') files.push(f);
+      else if (f && typeof f.filename === 'string') files.push(f.filename);
+      else if (f && typeof f.path === 'string') files.push(f.path);
+    }
+  }
 
-  const files = new Set();
-
-  if (Array.isArray(event.commits)) {
-    for (const commit of event.commits) {
+  if (Array.isArray(eventData?.commits)) {
+    for (const commit of eventData.commits) {
       for (const key of ['added', 'modified', 'removed']) {
-        if (Array.isArray(commit[key])) {
-          for (const file of commit[key]) files.add(file);
+        if (Array.isArray(commit?.[key])) {
+          for (const f of commit[key]) {
+            if (typeof f === 'string') files.push(f);
+          }
         }
       }
     }
   }
 
-  // Fallback for custom payloads that may include filenames directly.
-  if (Array.isArray(event.changed_files)) {
-    for (const file of event.changed_files) files.add(file);
+  if (Array.isArray(eventData?.pull_request?.files)) {
+    for (const f of eventData.pull_request.files) {
+      if (typeof f === 'string') files.push(f);
+      else if (f && typeof f.filename === 'string') files.push(f.filename);
+      else if (f && typeof f.path === 'string') files.push(f.path);
+    }
   }
 
-  if (event.pull_request && Array.isArray(event.pull_request.files)) {
-    for (const file of event.pull_request.files) files.add(file);
-  }
+  return [...new Set(files)];
+}
 
-  return [...files];
+function onlyAllowedExtensions(files) {
+  if (!files.length) return false;
+  const allowed = new Set(['.md', '.txt', '.css', '.png', '.jpg']);
+  return files.every((file) => {
+    const lower = file.toLowerCase();
+    const ext = lower.slice(lower.lastIndexOf('.'));
+    return allowed.has(ext);
+  });
 }
 
 (async () => {
-  if (!LICENSE_KEY) failLicense();
-
-  let gumroad;
   try {
-    gumroad = await gumroadRequest({
-      product_id: GUMROAD_PRODUCT_ID,
-      license_key: LICENSE_KEY,
+    const licenseKey = process.env.INPUT_LICENSE_KEY;
+
+    if (licenseKey === undefined || licenseKey === null || String(licenseKey).trim() === '') {
+      fail('::error::CI-Saver: Missing license key. A paid $15/month Gumroad license is required to use this action.');
+    }
+
+    const validationPayload = {
+      product_id: '0zdbjVb7SCH0flAjMt-BCA==',
+      license_key: String(licenseKey).trim(),
       increment_count_by_one: false,
-    });
-  } catch {
-    failLicense();
+    };
+
+    const gumroadResponse = await postJson('https://gumroad.com', validationPayload);
+
+    let parsed;
+    try {
+      parsed = JSON.parse(gumroadResponse.body || '{}');
+    } catch {
+      parsed = null;
+    }
+
+    if (!isValidSubscriptionResponse(parsed)) {
+      fail('::error::CI-Saver: Access Denied. Your $15/month Gumroad license key is invalid, expired, or unpaid.');
+    }
+
+    const eventPath = process.env.GITHUB_EVENT_PATH;
+    if (!eventPath) {
+      fail('::error::CI-Saver: Missing GITHUB_EVENT_PATH.');
+    }
+
+    const eventRaw = fs.readFileSync(eventPath, 'utf8');
+    const eventData = JSON.parse(eventRaw);
+    const changedFiles = extractChangedFiles(eventData);
+
+    const shouldRun = !onlyAllowedExtensions(changedFiles);
+    const outputPath = process.env.GITHUB_OUTPUT;
+
+    if (!outputPath) {
+      fail('::error::CI-Saver: Missing GITHUB_OUTPUT.');
+    }
+
+    fs.appendFileSync(outputPath, `should_run=${shouldRun ? 'true' : 'false'}\n`, 'utf8');
+  } catch (err) {
+    fail(`::error::CI-Saver: ${err && err.message ? err.message : 'Unexpected failure.'}`);
   }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(gumroad.body || '{}');
-  } catch {
-    failLicense();
-  }
-
-  if (gumroad.statusCode < 200 || gumroad.statusCode >= 300 || parsed.success === false) {
-    failLicense();
-  }
-
-  const changedFiles = getChangedFilesFromEvent();
-  const allowed = /\.(md|txt|css|png|jpg)$/i;
-
-  const onlyAllowed =
-    changedFiles.length > 0 && changedFiles.every((file) => allowed.test(file));
-
-  writeOutput('should_run', onlyAllowed ? 'false' : 'true');
-  console.log(`should_run=${onlyAllowed ? 'false' : 'true'}`);
-})().catch(() => {
-  failLicense();
-});
+})();
