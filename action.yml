@@ -1,12 +1,15 @@
 name: CI-Saver Code Inspector
-description: Checks a Gumroad license key and determines whether the workflow should run
+description: Enforces a license check and determines whether the heavy CI/CD pipeline should run
+
 inputs:
   license_key:
-    description: Gumroad license key
+    description: Your paid $15/month Gumroad license key
     required: true
+
 outputs:
   should_run:
-    description: Whether the workflow should run
+    description: Returns false if the heavy CI/CD pipeline runs can be skipped
+
 runs:
-  using: node20
-  main: index.js
+  using: "node20"
+  main: "index.js"
