@@ -1,0 +1,12 @@
+name: CI-Saver Code Inspector
+description: Checks a Gumroad license key and determines whether the workflow should run
+inputs:
+  license_key:
+    description: Gumroad license key
+    required: true
+outputs:
+  should_run:
+    description: Whether the workflow should run
+runs:
+  using: node20
+  main: index.js
